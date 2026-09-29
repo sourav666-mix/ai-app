@@ -7,7 +7,8 @@
 //  capability icons, context size, star-to-favorite.
 // ═══════════════════════════════════════════════════════════════
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Brain, Check, ChevronDown, Eye, Globe, Image as ImageIcon, Search, Star,
 } from 'lucide-react';
@@ -112,8 +113,11 @@ export default function ModelSelector({ value, onChange, disabled = false }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [favorites, setFavorites] = useState(() => getFavoriteModels());
+  // Fixed-position anchor for the portaled panel (escapes overflow clipping)
+  const [pos, setPos] = useState(null);
 
   const rootRef = useRef(null);
+  const panelRef = useRef(null);
   const searchRef = useRef(null);
 
   const allModels = useMemo(() => getAllModels(), []);
@@ -123,11 +127,23 @@ export default function ModelSelector({ value, onChange, disabled = false }) {
     return allModels.find((m) => m.id === clean) || null;
   }, [allModels, value]);
 
+  // Anchor the panel above the trigger, clamped to the viewport
+  const updatePos = useCallback(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const width = Math.min(352, window.innerWidth - 16); // 22rem = 352px
+    const left = Math.min(Math.max(8, r.left), window.innerWidth - width - 8);
+    setPos({ left, bottom: window.innerHeight - r.top + 8, width });
+  }, []);
+
   // Close on outside click / Escape
   useEffect(() => {
     if (!open) return;
     const onDown = (e) => {
-      if (!rootRef.current?.contains(e.target)) setOpen(false);
+      const inRoot = rootRef.current?.contains(e.target);
+      const inPanel = panelRef.current?.contains(e.target);
+      if (!inRoot && !inPanel) setOpen(false);
     };
     const onKey = (e) => e.key === 'Escape' && setOpen(false);
     document.addEventListener('pointerdown', onDown);
@@ -138,14 +154,16 @@ export default function ModelSelector({ value, onChange, disabled = false }) {
     };
   }, [open]);
 
-  // Fresh state on open
+  // Fresh state on open + keep anchored on resize/rotation
   useEffect(() => {
-    if (open) {
-      setFavorites(getFavoriteModels());
-      setQuery('');
-      requestAnimationFrame(() => searchRef.current?.focus());
-    }
-  }, [open]);
+    if (!open) return;
+    setFavorites(getFavoriteModels());
+    setQuery('');
+    updatePos();
+    requestAnimationFrame(() => searchRef.current?.focus());
+    window.addEventListener('resize', updatePos);
+    return () => window.removeEventListener('resize', updatePos);
+  }, [open, updatePos]);
 
   const filtered = useMemo(() => searchModels(query, allModels), [allModels, query]);
   const groups = useMemo(() => groupModelsByProvider(filtered), [filtered]);
@@ -185,9 +203,16 @@ export default function ModelSelector({ value, onChange, disabled = false }) {
         />
       </button>
 
-      {/* Panel (opens upward — selector lives in the bottom toolbar) */}
-      {open && (
-        <div className="absolute bottom-full left-0 z-30 mb-2 w-[min(22rem,calc(100vw-2rem))] animate-scale-in overflow-hidden rounded-2xl border border-white/10 bg-surface-1 shadow-2xl">
+      {/* Panel — portaled to <body> so the horizontally-scrollable mobile
+          toolbar (overflow-x-auto) can't clip it; anchored above the trigger */}
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={panelRef}
+            style={{ left: pos.left, bottom: pos.bottom, width: pos.width }}
+            className="fixed z-50 animate-scale-in overflow-hidden rounded-2xl border border-white/10 bg-surface-1 shadow-glow-lg"
+          >
           {/* Search */}
           <div className="border-b border-white/10 p-2">
             <div className="relative">
@@ -260,8 +285,9 @@ export default function ModelSelector({ value, onChange, disabled = false }) {
           <p className="border-t border-white/10 px-3 py-2 text-[10px] text-zinc-600">
             Tip: add ANY OpenRouter model via Settings → Models → Model Manager.
           </p>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
